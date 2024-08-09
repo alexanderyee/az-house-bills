@@ -1,6 +1,12 @@
 import sys
 import re
 
+'''
+Usage: python costco_receipt_parser.py <input_file> <prefix>
+
+TODO: 
+ * add capability for parsing liquor tax, e.g. "	2465	LIQUOR LITER TAX T/1080962	2.83"
+'''
 TAX_RATE = .1035
 DEBUG = False
 def parse_columns_from_file(file_path):
@@ -19,10 +25,14 @@ def parse_columns_from_file(file_path):
             if item_price.endswith('-'):
                 item_price = '-' + item_price[:-1]  # Move the dash to the front
                 result[-1] = (result[-1][0], result[-1][1] + float(item_price), result[-1][2])
+                if DEBUG:
+                    print("parsed coupon for: " + str(result[-1]))
             else:
                 # items usually end with a Y or N, meaning taxed or not taxed
                 taxed = match.group(3).strip()
                 result.append((item_name, float(item_price), taxed))
+                if DEBUG:
+                    print("parsed item: " + str(result[-1]))
             
         # Using regex to capture subtotal
         match = re.match(r'SUBTOTAL\s+(\d+\.\d+)', line.strip())
