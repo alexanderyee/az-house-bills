@@ -95,12 +95,19 @@ def copy_to_clipboard(html_fragment: str, plain_text: str):
 def parse_columns_from_file(file_path):
     with open(file_path, 'r') as file:
         lines = file.readlines()
-    
+
     result = []
-    
+    receipt = {"subtotal": None, "tax": None, "total": None}
+    coupons_applied = 0
+    unparsed = []
+
     for line in lines:
-        # Using regex to capture the item number, name, and price, ensuring the price starts with a number and a decimal point
-        match = re.match(r'^[A-Z]?\s*(\d+)\s+(.*?)\s+(\d+\.\d+\-*)\s*([YN])?$', line.strip())
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # Item / coupon line: optional leading E, then item number, name, price, optional Y/N.
+        match = re.match(r'^[A-Z]?\s*(\d+)\s+(.*?)\s+(\d+\.\d+\-*)\s*([YN])?$', stripped)
         if match:
             item_number = match.group(1).strip()
             item_name = match.group(2).strip()
@@ -110,6 +117,7 @@ def parse_columns_from_file(file_path):
                 item_price = '-' + item_price[:-1]  # Move the dash to the front
                 prev = result[-1]
                 result[-1] = (prev[0], prev[1], prev[2] + float(item_price), prev[3])
+                coupons_applied += 1
                 if DEBUG:
                     print("parsed coupon for: " + str(result[-1]))
             else:
@@ -118,27 +126,26 @@ def parse_columns_from_file(file_path):
                 result.append((item_number, item_name, float(item_price), taxed))
                 if DEBUG:
                     print("parsed item: " + str(result[-1]))
-            
-        # Using regex to capture subtotal
-        match = re.match(r'SUBTOTAL\s+(\d+\.\d+)', line.strip())
-        if match:
-            subtotal = float(match.group(1).strip())
-            print(f"Receipt subtotal: {subtotal:.2f}")
-        
-        # Using regex to capture tax
-        match = re.match(r'TAX\s+(\d+\.\d+)', line.strip())
-        if match:
-            tax = float(match.group(1).strip())
-            print(f"Receipt tax: {tax:.2f}")
-        
-        # Using regex to capture total
-        match = re.match(r'.*Total\s+(\d+\.\d+)', line.strip())
-        if match:
-            total = float(match.group(1).strip())
-            print(f"Receipt total: {total:.2f}")
-        
-    print()
-    return result
+            continue
+
+        m = re.match(r'SUBTOTAL\s+(\d+\.\d+)', stripped, re.IGNORECASE)
+        if m:
+            receipt["subtotal"] = float(m.group(1))
+            continue
+
+        m = re.match(r'TAX\s+(\d+\.\d+)', stripped, re.IGNORECASE)
+        if m:
+            receipt["tax"] = float(m.group(1))
+            continue
+
+        m = re.match(r'.*Total\s+(\d+\.\d+)', stripped, re.IGNORECASE)
+        if m:
+            receipt["total"] = float(m.group(1))
+            continue
+
+        unparsed.append(stripped)
+
+    return result, receipt, coupons_applied, unparsed
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -147,8 +154,8 @@ if __name__ == "__main__":
     
     input_file = sys.argv[1]
     prefix = sys.argv[2]
-    parsed_columns = parse_columns_from_file(input_file)
-    
+    parsed_columns, receipt_totals, coupons_applied, unparsed_lines = parse_columns_from_file(input_file)
+
     if DEBUG:
         for item_number, item_name, item_price, taxed in parsed_columns:
             print(f"{item_number}, {item_name}, {item_price:.2f}, {taxed}")
@@ -187,9 +194,33 @@ if __name__ == "__main__":
         "\r\n".join(text_rows),
     )
     print(f"\nCopied {len(result)} items to clipboard — paste into Sheets.")
-    print()
-    subtotal = sum(parsed_col[2] for parsed_col in parsed_columns)
-    print(f"Calculated subtotal: {subtotal}")
-    print(f"Calculated tax: {total_tax:.2f}")
-    print(f"Calculated total: {calculated_total:.2f}")
+
+    calculated_subtotal = sum(parsed_col[2] for parsed_col in parsed_columns)
+
+    # Sanity checks. The receipt-reported subtotal/tax/total don't have to match exactly:
+    # per-item rounding of the tax can drift a bit, so use a forgiving threshold and flag
+    # only when the gap is large enough to suggest something real (missing item, unparsed
+    # surcharge line, wrong tax rate, etc.).
+    DRIFT_THRESHOLD = 1.00
+
+    def _check(name, receipt_value, calculated_value):
+        if receipt_value is None:
+            print(f"  {name}: calculated {calculated_value:.2f} (no receipt value found)")
+            return
+        delta = calculated_value - receipt_value
+        flag = "  [!] check receipt" if abs(delta) > DRIFT_THRESHOLD else ""
+        print(f"  {name}: receipt {receipt_value:.2f}, calculated {calculated_value:.2f}, delta {delta:+.2f}{flag}")
+
+    print("\nSanity check:")
+    print(f"  Items parsed: {len(parsed_columns)}")
+    print(f"  Items output: {len(result)}"
+          + ("  [!] mismatch" if len(result) != len(parsed_columns) else ""))
+    print(f"  Coupons applied: {coupons_applied}")
+    _check("Subtotal", receipt_totals["subtotal"], calculated_subtotal)
+    _check("Tax", receipt_totals["tax"], total_tax)
+    _check("Total", receipt_totals["total"], calculated_total)
+    if unparsed_lines:
+        print(f"  Unparsed lines ({len(unparsed_lines)}) — possibly liquor tax or SB recovery surcharges:")
+        for line in unparsed_lines:
+            print(f"    {line}")
     
