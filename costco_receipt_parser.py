@@ -100,10 +100,20 @@ def parse_columns_from_file(file_path):
     receipt = {"subtotal": None, "tax": None, "total": None}
     coupons_applied = 0
     unparsed = []
+    pending_qty = None
 
     for line in lines:
         stripped = line.strip()
         if not stripped:
+            continue
+
+        # Quantity line, e.g. "2 @ 12.99", sits on its own line *before* the item it
+        # describes (a multi-quantity purchase). Hold it and attach it to the next item
+        # parsed. Must be checked before the item regex, which would otherwise match it
+        # as item_number="2", name="@", price="12.99".
+        qty_match = re.match(r'^(\d+)\s*@\s*(\d+\.\d+)\s*$', stripped)
+        if qty_match:
+            pending_qty = f"{qty_match.group(1)} @ {qty_match.group(2)}"
             continue
 
         # Item / coupon line: optional leading E, then item number, name, price, optional Y/N.
@@ -116,14 +126,15 @@ def parse_columns_from_file(file_path):
             if item_price.endswith('-'):
                 item_price = '-' + item_price[:-1]  # Move the dash to the front
                 prev = result[-1]
-                result[-1] = (prev[0], prev[1], prev[2] + float(item_price), prev[3])
+                result[-1] = (prev[0], prev[1], prev[2] + float(item_price), prev[3], prev[4])
                 coupons_applied += 1
                 if DEBUG:
                     print("parsed coupon for: " + str(result[-1]))
             else:
                 # items usually end with a Y or N, meaning taxed or not taxed
                 taxed = match.group(4).strip()
-                result.append((item_number, item_name, float(item_price), taxed))
+                result.append((item_number, item_name, float(item_price), taxed, pending_qty))
+                pending_qty = None
                 if DEBUG:
                     print("parsed item: " + str(result[-1]))
             continue
@@ -157,13 +168,13 @@ if __name__ == "__main__":
     parsed_columns, receipt_totals, coupons_applied, unparsed_lines = parse_columns_from_file(input_file)
 
     if DEBUG:
-        for item_number, item_name, item_price, taxed in parsed_columns:
-            print(f"{item_number}, {item_name}, {item_price:.2f}, {taxed}")
+        for item_number, item_name, item_price, taxed, qty_note in parsed_columns:
+            print(f"{item_number}, {item_name}, {item_price:.2f}, {taxed}, {qty_note}")
 
     result = []
     total_tax = 0.0
     calculated_total = 0.0
-    for item_number, item_name, item_price, taxed in parsed_columns:
+    for item_number, item_name, item_price, taxed, qty_note in parsed_columns:
         item_total = item_price
 
         # Apply tax rate to taxed items. Since we round here when calculating the item's total price
@@ -175,20 +186,24 @@ if __name__ == "__main__":
             total_tax += item_tax
 
         calculated_total += item_total
-        result.append((item_number, item_name, item_total))
+        result.append((item_number, item_name, item_total, qty_note))
 
     html_rows = []
     text_rows = []
-    for item_number, item_name, item_price in result:
+    for item_number, item_name, item_price, qty_note in result:
         url = f"{ITEM_URL_PREFIX}{item_number}"
-        print(f"{prefix}{item_name}\t{item_price:.2f}\t{url}")
+        # Quantity note (e.g. "2 @ 12.99") trails the item name, outside the hyperlink.
+        note_suffix = f" {qty_note}" if qty_note else ""
+        print(f"{prefix}{item_name}{note_suffix}\t{item_price:.2f}\t{url}")
         # Prefix sits as plain text in the cell; only the item name is the anchor.
+        note_html = f" {html.escape(qty_note)}" if qty_note else ""
         html_rows.append(
             f'<tr><td>{html.escape(prefix)}'
             f'<a href="{html.escape(url, quote=True)}">{html.escape(item_name)}</a>'
+            f'{note_html}'
             f'</td><td>{item_price:.2f}</td></tr>'
         )
-        text_rows.append(f"{prefix}{item_name}\t{item_price:.2f}")
+        text_rows.append(f"{prefix}{item_name}{note_suffix}\t{item_price:.2f}")
     copy_to_clipboard(
         "<table>" + "".join(html_rows) + "</table>",
         "\r\n".join(text_rows),

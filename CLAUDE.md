@@ -36,6 +36,7 @@ E	1127099	QUESO CHIHUA	12.29 N
 Fields are: optional leading `E`, item number, item name, price, and a taxed flag (`Y`/`N`). Tab-separated in the source files. Two non-item line shapes also matter:
 
 - **Coupons** — a line whose price ends in `-` (e.g. `360730	/ 1894414	4.00-`). These don't produce their own item; the parser subtracts the discount from the *previous* item parsed and the dash is moved to the front of the number.
+- **Quantity lines** — a line of the form `2 @ 12.99` (quantity, `@`, unit price) that sits on its own line *before* the item it describes, for multi-quantity purchases. It doesn't produce its own item and carries no price into the totals; it's held and attached to the *next* item as a note rendered after the item-name hyperlink (e.g. the Sheets cell becomes `<a>EGGOS 72CT</a> 2 @ 12.99`). Checked before the item regex, which would otherwise misparse it as item_number=`2`, name=`@`, price=`12.99`.
 - **Totals** — lines starting with `SUBTOTAL`, `TAX`, or containing `Total` are captured separately and printed for sanity-checking against the calculated values.
 
 ## Tax handling quirk
